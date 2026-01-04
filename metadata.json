@@ -1,0 +1,8 @@
+{
+  "name": "Zerin Voice Assistant",
+  "description": "A futuristic AI-powered voice assistant with visual object recognition and interactive animations.",
+  "requestFramePermissions": [
+    "camera",
+    "microphone"
+  ]
+}
