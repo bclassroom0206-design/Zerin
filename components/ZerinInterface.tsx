@@ -2,6 +2,7 @@
 import React, { useState, useEffect, useRef, useCallback } from 'react';
 import { queryZerinBrain } from '../services/geminiService';
 import { authService, User } from '../services/authService';
+import { knowledgeService, KnowledgeSource } from '../services/knowledgeService';
 
 enum AnimationState {
   SILENT = 'silent',
@@ -56,6 +57,12 @@ const ZerinInterface: React.FC = () => {
   const [showEnrollmentForm, setShowEnrollmentForm] = useState(false);
   const [enrollForm, setEnrollForm] = useState({ name: '', email: '', pin: '', mobile: '', tier: 'FREE' as User['tier'] });
 
+  // Admin Knowledge Base States
+  const [knowledgeSources, setKnowledgeSources] = useState<KnowledgeSource[]>([]);
+  const [showKnowledgeForm, setShowKnowledgeForm] = useState(false);
+  const [knowledgeForm, setKnowledgeForm] = useState({ name: '', type: 'PDF' as KnowledgeSource['type'], link: '' });
+  const [isSyncing, setIsSyncing] = useState(false);
+
   // Admin Financials States
   const [gateways, setGateways] = useState({
     stripe: { active: true, status: 'CONNECTED' },
@@ -68,14 +75,6 @@ const ZerinInterface: React.FC = () => {
     { id: 'PRO', price: '$29', tokens: 'Unlimited', features: ['Advanced LLM', 'Voice Mode', 'Video Vision', 'Daily Records'] },
     { id: 'ENTERPRISE', price: '$99', tokens: 'Custom', features: ['Private Core', 'Dedicated LLM', 'Full Neural Link', 'Admin Hub Access'] }
   ]);
-
-  // Admin Knowledge Base States
-  const [knowledgeSources, setKnowledgeSources] = useState<{id: string, name: string, type: string, status: string, link: string}[]>([
-    { id: '1', name: 'Internal Protocol Alpha', type: 'PDF', status: 'INDEXED', link: '#' },
-    { id: '2', name: 'Project Timeline', type: 'GOOGLE SHEETS', status: 'SYNCED', link: '#' }
-  ]);
-  const [showKnowledgeForm, setShowKnowledgeForm] = useState(false);
-  const [knowledgeForm, setKnowledgeForm] = useState({ name: '', type: 'PDF', link: '' });
 
   // User Panel States
   const [tasks, setTasks] = useState<{id: string, desc: string, freq: string}[]>([]);
@@ -178,6 +177,8 @@ Constraint: Keep responses concise and meaningful.`
     const storedPersona = localStorage.getItem('zerin_persona');
     if (storedPersona) setPersonaConfig(JSON.parse(storedPersona));
 
+    setKnowledgeSources(knowledgeService.getSources());
+
     setupAttribution();
     const interval = setInterval(() => {
         setupAttribution();
@@ -251,6 +252,13 @@ Constraint: Keep responses concise and meaningful.`
       stream?.getTracks().forEach(track => track.stop());
       setIsVideoCallActive(false);
     }
+  };
+
+  // Added clearChat function to purge the dialogue stream
+  const clearChat = () => {
+    setChatHistory([]);
+    triggerSuccessVisual();
+    speak("Hello sir, the dialogue stream has been purged from the active neural buffer.");
   };
 
   const handleFileSelect = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -366,17 +374,14 @@ Constraint: Keep responses concise and meaningful.`
     }
   };
 
+  const handlePinSubmitOnEnter = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter') handlePinSubmit();
+  };
+
   const handleLogout = () => {
     authService.setCurrentUser(null);
     setCurrentUser(null);
     setView(AppView.AUTH);
-  };
-
-  const clearChat = () => {
-    setChatHistory([]);
-    setDisplayMessage('HISTORY CLEARED.');
-    triggerSuccessVisual();
-    speak("Hello sir, dialogue history purged.");
   };
 
   const deployLLM = (id: string) => {
@@ -425,23 +430,37 @@ Constraint: Keep responses concise and meaningful.`
       speak("Hello sir, source parameters must be defined before indexing.");
       return;
     }
-    const newSource = {
-      id: Date.now().toString(),
-      ...knowledgeForm,
-      status: 'INDEXING'
-    };
-    setKnowledgeSources([...knowledgeSources, newSource]);
+    const newSource = knowledgeService.addSource({
+      name: knowledgeForm.name,
+      type: knowledgeForm.type,
+      link: knowledgeForm.link
+    });
+    setKnowledgeSources(knowledgeService.getSources());
     setShowKnowledgeForm(false);
     setKnowledgeForm({ name: '', type: 'PDF', link: '' });
     triggerSuccessVisual();
     speak(`Hello sir, the ${newSource.type} resource is being assimilated into the knowledge core.`);
+    
+    // Simulate indexing delay
     setTimeout(() => {
-      setKnowledgeSources(prev => prev.map(s => s.id === newSource.id ? { ...s, status: 'INDEXED' } : s));
-    }, 3000);
+      knowledgeService.updateSource(newSource.id, { status: 'INDEXED' });
+      setKnowledgeSources(knowledgeService.getSources());
+    }, 4000);
+  };
+
+  const reindexKnowledgeBase = async () => {
+    setIsSyncing(true);
+    triggerSuccessVisual();
+    speak("Hello sir, initiating complete neural re-indexing of the knowledge database.");
+    const updated = await knowledgeService.syncAll();
+    setKnowledgeSources(updated as KnowledgeSource[]);
+    setIsSyncing(false);
+    speak("Hello sir, knowledge core sync complete. All sources are now active.");
   };
 
   const deleteKnowledgeSource = (id: string) => {
-    setKnowledgeSources(knowledgeSources.filter(s => s.id !== id));
+    knowledgeService.deleteSource(id);
+    setKnowledgeSources(knowledgeService.getSources());
     triggerSuccessVisual();
     speak("Hello sir, source link has been purged from the knowledge core.");
   };
@@ -548,7 +567,7 @@ Constraint: Keep responses concise and meaningful.`
           </div>
           <h1 className="orbitron text-lg md:text-xl text-cyan-400 mb-2 uppercase tracking-widest truncate">Hello, {currentUser?.name}</h1>
           <p className="text-[10px] orbitron text-white/40 mb-8 tracking-widest uppercase">Enter Neural Pin to Proceed</p>
-          <input type="password" placeholder="PIN" className="w-full h-14 bg-black/50 border border-white/10 rounded-lg text-center orbitron text-2xl tracking-[1em] focus:border-cyan-400 outline-none mb-6 text-white" maxLength={4} value={pin} onChange={e => setPin(e.target.value)} onKeyDown={e => e.key === 'Enter' && handlePinSubmit()} />
+          <input type="password" placeholder="PIN" className="w-full h-14 bg-black/50 border border-white/10 rounded-lg text-center orbitron text-2xl tracking-[1em] focus:border-cyan-400 outline-none mb-6 text-white" maxLength={4} value={pin} onChange={e => setPin(e.target.value)} onKeyDown={handlePinSubmitOnEnter} />
           <button onClick={handlePinSubmit} className="w-full h-12 bg-cyan-500 text-black orbitron font-bold rounded transition-all active:scale-95 mb-4 shadow-[0_0_15px_rgba(0,210,255,0.2)]">ACCESS LINK</button>
         </div>
       </div>
@@ -738,9 +757,18 @@ Constraint: Keep responses concise and meaningful.`
                       <div className="w-10 h-10 lg:w-12 lg:h-12 rounded bg-cyan-500/10 flex items-center justify-center border border-cyan-400/30 shrink-0">
                         <svg xmlns="http://www.w3.org/2000/svg" width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="#00d2ff" strokeWidth="2.5"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>
                       </div>
-                      <h2 className="orbitron text-2xl lg:text-4xl font-black tracking-[0.2em] uppercase">Knowledge Base</h2>
+                      <h2 className="orbitron text-2xl lg:text-4xl font-black tracking-[0.2em] uppercase">Knowledge Core</h2>
                    </div>
-                   <button onClick={() => setShowKnowledgeForm(!showKnowledgeForm)} className="bg-cyan-500 hover:bg-cyan-400 text-black px-4 lg:px-6 h-11 lg:h-12 orbitron text-[10px] lg:text-[11px] font-bold tracking-widest transition-all rounded-sm flex items-center justify-center space-x-2 shrink-0"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M12 5v14M5 12h14"/></svg><span>ADD SOURCE</span></button>
+                   <div className="flex space-x-3">
+                      <button onClick={reindexKnowledgeBase} disabled={isSyncing} className={`bg-white/5 border border-white/10 hover:bg-white/10 text-white/60 px-4 lg:px-6 h-11 lg:h-12 orbitron text-[10px] lg:text-[11px] font-bold tracking-widest transition-all rounded-sm flex items-center justify-center space-x-2 shrink-0 ${isSyncing ? 'opacity-50 cursor-wait' : ''}`}>
+                         <svg className={isSyncing ? 'animate-spin' : ''} xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M21 12a9 9 0 1 1-6.219-8.56"/><path d="M22 2v6h-6"/></svg>
+                         <span>{isSyncing ? 'SYNCING...' : 'RE-INDEX ALL'}</span>
+                      </button>
+                      <button onClick={() => setShowKnowledgeForm(!showKnowledgeForm)} className="bg-cyan-500 hover:bg-cyan-400 text-black px-4 lg:px-6 h-11 lg:h-12 orbitron text-[10px] lg:text-[11px] font-bold tracking-widest transition-all rounded-sm flex items-center justify-center space-x-2 shrink-0">
+                         <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="3"><path d="M12 5v14M5 12h14"/></svg>
+                         <span>ADD SOURCE</span>
+                      </button>
+                   </div>
                 </div>
 
                 {showKnowledgeForm && (
@@ -748,7 +776,7 @@ Constraint: Keep responses concise and meaningful.`
                     <h3 className="orbitron text-xs font-black text-cyan-400 tracking-widest uppercase">Neural Source Integration</h3>
                     <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-4 gap-4 lg:gap-6">
                       <input type="text" placeholder="RESOURCE NAME" className="bg-black/60 border border-white/10 rounded h-11 px-4 orbitron text-[10px] text-white" value={knowledgeForm.name} onChange={e => setKnowledgeForm({...knowledgeForm, name: e.target.value})} />
-                      <select className="bg-black/60 border border-white/10 rounded h-11 px-4 orbitron text-[10px] text-white" value={knowledgeForm.type} onChange={e => setKnowledgeForm({...knowledgeForm, type: e.target.value})}>
+                      <select className="bg-black/60 border border-white/10 rounded h-11 px-4 orbitron text-[10px] text-white" value={knowledgeForm.type} onChange={e => setKnowledgeForm({...knowledgeForm, type: e.target.value as KnowledgeSource['type']})}>
                         <option>PDF</option><option>E-BOOK</option><option>WEBSITE</option><option>GOOGLE DRIVE</option><option>GOOGLE SHEETS</option>
                       </select>
                       <input type="text" placeholder="SOURCE URL / LINK" className="bg-black/60 border border-white/10 rounded h-11 px-4 orbitron text-[10px] text-white sm:col-span-1 md:col-span-1" value={knowledgeForm.link} onChange={e => setKnowledgeForm({...knowledgeForm, link: e.target.value})} />
@@ -758,30 +786,42 @@ Constraint: Keep responses concise and meaningful.`
                 )}
 
                 <div className="glass-panel flex-1 overflow-x-auto border border-white/5 rounded-xl flex flex-col">
-                  <div className="min-w-[600px] flex-1">
+                  <div className="min-w-[700px] flex-1">
                     <table className="w-full orbitron text-[10px] md:text-[11px] font-bold tracking-widest text-left">
                       <thead className="bg-[#0a0a1a] sticky top-0 z-10 border-b border-white/10">
                         <tr>
-                          <th className="p-4 lg:p-6 text-white/30 uppercase tracking-[0.3em]">Resource</th>
-                          <th className="p-4 lg:p-6 text-white/30 uppercase tracking-[0.3em]">Origin Type</th>
-                          <th className="p-4 lg:p-6 text-white/30 uppercase tracking-[0.3em]">Neural Status</th>
-                          <th className="p-4 lg:p-6 text-center text-white/30 uppercase tracking-[0.3em]">Actions</th>
+                          <th className="p-4 lg:p-6 text-white/30 uppercase tracking-[0.3em]">Resource / Data Point</th>
+                          <th className="p-4 lg:p-6 text-white/30 uppercase tracking-[0.3em]">Neural Origin</th>
+                          <th className="p-4 lg:p-6 text-white/30 uppercase tracking-[0.3em]">Indexing Status</th>
+                          <th className="p-4 lg:p-6 text-white/30 uppercase tracking-[0.3em]">Last Assimilation</th>
+                          <th className="p-4 lg:p-6 text-center text-white/30 uppercase tracking-[0.3em]">Action</th>
                         </tr>
                       </thead>
                       <tbody className="divide-y divide-white/5">
                         {knowledgeSources.map((source) => (
                           <tr key={source.id} className="hover:bg-cyan-500/5 transition-colors">
-                            <td className="p-4 lg:p-6"><span className="text-white truncate max-w-[200px] block">{source.name.toUpperCase()}</span></td>
-                            <td className="p-4 lg:p-6"><span className="text-cyan-400/60 text-[9px] border border-cyan-500/20 px-2 py-0.5 rounded">{source.type}</span></td>
+                            <td className="p-4 lg:p-6">
+                               <div className="flex items-center space-x-4">
+                                  <div className="w-8 h-8 rounded bg-white/5 flex items-center justify-center text-white/20">
+                                     {source.type === 'PDF' && <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M14.5 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7.5L14.5 2z"/><polyline points="14 2 14 8 20 8"/></svg>}
+                                     {source.type === 'WEBSITE' && <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><circle cx="12" cy="12" r="10"/><line x1="2" x2="22" y1="12" y2="12"/><path d="M12 2a15.3 15.3 0 0 1 4 10 15.3 15.3 0 0 1-4 10 15.3 15.3 0 0 1-4-10 15.3 15.3 0 0 1 4-10z"/></svg>}
+                                     {(source.type === 'GOOGLE DRIVE' || source.type === 'GOOGLE SHEETS') && <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M10 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V10l-6-6Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/></svg>}
+                                     {source.type === 'E-BOOK' && <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M4 19.5A2.5 2.5 0 0 1 6.5 17H20"/><path d="M6.5 2H20v20H6.5A2.5 2.5 0 0 1 4 19.5v-15A2.5 2.5 0 0 1 6.5 2z"/></svg>}
+                                  </div>
+                                  <span className="text-white truncate max-w-[150px] lg:max-w-[250px] block">{source.name.toUpperCase()}</span>
+                               </div>
+                            </td>
+                            <td className="p-4 lg:p-6"><span className="text-cyan-400/60 text-[9px] border border-cyan-500/20 px-2 py-0.5 rounded uppercase tracking-wider">{source.type}</span></td>
                             <td className="p-4 lg:p-6">
                               <div className="flex items-center space-x-3">
-                                <div className={`w-2 h-2 rounded-full ${source.status === 'INDEXED' || source.status === 'SYNCED' ? 'bg-green-500' : 'bg-yellow-500 animate-pulse'}`}></div>
-                                <span className={source.status === 'INDEXED' || source.status === 'SYNCED' ? 'text-green-500' : 'text-yellow-500'}>{source.status}</span>
+                                <div className={`w-2 h-2 rounded-full ${source.status === 'INDEXED' || source.status === 'SYNCED' ? 'bg-green-500 shadow-[0_0_8px_#22c55e]' : source.status === 'FAILED' ? 'bg-red-500' : 'bg-yellow-500 animate-pulse shadow-[0_0_8px_#eab308]'}`}></div>
+                                <span className={source.status === 'INDEXED' || source.status === 'SYNCED' ? 'text-green-500' : source.status === 'FAILED' ? 'text-red-500' : 'text-yellow-500'}>{source.status}</span>
                               </div>
                             </td>
+                            <td className="p-4 lg:p-6 text-white/40 text-[9px] uppercase tracking-widest">{source.lastUpdated}</td>
                             <td className="p-4 lg:p-6 text-center">
                               <div className="flex items-center justify-center space-x-4">
-                                <button onClick={() => deleteKnowledgeSource(source.id)} className="text-white/10 hover:text-red-500 transition-colors"><svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
+                                <button onClick={() => deleteKnowledgeSource(source.id)} className="text-white/10 hover:text-red-500 transition-colors p-2 rounded hover:bg-red-500/5"><svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.5"><path d="M3 6h18"/><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"/><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"/></svg></button>
                               </div>
                             </td>
                           </tr>
@@ -789,6 +829,9 @@ Constraint: Keep responses concise and meaningful.`
                       </tbody>
                     </table>
                   </div>
+                </div>
+                <div className="glass-panel p-4 border border-cyan-500/10 rounded-lg bg-cyan-500/5">
+                   <p className="rajdhani text-[10px] text-cyan-400/50 uppercase tracking-[0.2em] leading-relaxed">System Note: All documents linked in the Knowledge Core are automatically vectorized and prioritized during neural inference. Zerin utilizes these sources as its primary factual grounding layer.</p>
                 </div>
              </div>
            )}
